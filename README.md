@@ -90,3 +90,53 @@ aws secretsmanager get-secret-value \
   --query SecretString \
   --output text
 ```
+
+## Superadmin / OP (grant yourself admin permissions)
+
+This server stores permissions in:
+- `/opt/hytale/server/Server/permissions.json`
+
+The `users` map is keyed by **account UUID** (not username). To grant yourself full admin, add your UUID to the `OP` group (which is `"*"` in `groups.OP`).
+
+### Find your UUID
+
+Join the server once, then on the instance:
+
+```bash
+sudo grep -RIn "Auto-selected profile:" /opt/hytale/server/Server/logs | tail -n 20
+```
+
+You should see something like:
+`Auto-selected profile: <username> (<uuid>)`
+
+### Add UUID to the OP group
+
+Replace `PUT-UUID-HERE` and run:
+
+```bash
+sudo cp /opt/hytale/server/Server/permissions.json "/opt/hytale/server/Server/permissions.json.bak.$(date +%s)"
+
+sudo python3 - <<'PY'
+import json, pathlib
+p = pathlib.Path("/opt/hytale/server/Server/permissions.json")
+data = json.loads(p.read_text())
+uid = "PUT-UUID-HERE"
+
+user = data.setdefault("users", {}).setdefault(uid, {})
+groups = set(user.get("groups", []))
+groups.add("OP")
+user["groups"] = sorted(groups)
+
+p.write_text(json.dumps(data, indent=2) + "\n")
+PY
+
+sudo python3 -m json.tool /opt/hytale/server/Server/permissions.json >/dev/null && echo "permissions.json OK"
+sudo systemctl restart hytale
+```
+
+### Verify in-game
+
+Join the server and run a non-destructive admin command like:
+- `/gamemode creative`
+
+If it succeeds (and you don’t see a permission error), you’re OP.
