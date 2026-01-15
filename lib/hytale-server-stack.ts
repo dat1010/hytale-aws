@@ -116,31 +116,42 @@ function addHytaleUserData(instance: ec2.Instance, downloaderZipAsset: s3assets.
   // ----------------------------
   // UserData - full automation
   // ----------------------------
-  const commands = [
+  // Split into logical groups for readability. Keep command strings and ordering identical.
+  const loggingAndSafety = [
     // Log user-data for easy debugging
     "exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1",
     "set -euxo pipefail",
+  ];
 
+  const tools = [
     // tools
     "dnf install -y --allowerasing curl-minimal unzip tar rsync",
+  ];
 
+  const mountDataVolume = [
     // Mount /dev/xvdb at /opt/hytale
     "if ! file -s /dev/xvdb | grep -q ext4; then mkfs -t ext4 /dev/xvdb; fi",
     "mkdir -p /opt/hytale",
     "grep -q '^/dev/xvdb /opt/hytale ' /etc/fstab || echo '/dev/xvdb /opt/hytale ext4 defaults,nofail 0 2' >> /etc/fstab",
     "mount -a",
+  ];
 
+  const java = [
     // Java 25
     "rpm --import https://yum.corretto.aws/corretto.key",
     "curl -fsSL https://yum.corretto.aws/corretto.repo -o /etc/yum.repos.d/corretto.repo",
     "dnf clean all",
     "dnf install -y java-25-amazon-corretto-headless",
+  ];
 
+  const userAndDirs = [
     // User + dirs
     "useradd -r -m -d /opt/hytale -s /sbin/nologin hytale || true",
     "mkdir -p /opt/hytale/downloader /opt/hytale/server /opt/hytale/game /opt/hytale/logs /opt/hytale/tmp /opt/hytale/bin",
     "chown -R hytale:hytale /opt/hytale",
+  ];
 
+  const downloadAndInstallDownloader = [
     // Pull the downloader zip asset to the instance
     `aws s3 cp s3://${downloaderZipAsset.s3BucketName}/${downloaderZipAsset.s3ObjectKey} /opt/hytale/tmp/hytale-downloader.zip`,
     "unzip -o /opt/hytale/tmp/hytale-downloader.zip -d /opt/hytale/downloader",
@@ -150,7 +161,9 @@ function addHytaleUserData(instance: ec2.Instance, downloaderZipAsset: s3assets.
     "cp -f /opt/hytale/downloader/hytale-downloader-linux-amd64 /opt/hytale/downloader/hytale-downloader",
     "chmod +x /opt/hytale/downloader/hytale-downloader",
     "chown -R hytale:hytale /opt/hytale/downloader",
+  ];
 
+  const updaterScript = [
     // ---- updater script ----
     // IMPORTANT: this DOES NOT wipe /opt/hytale/server if it already exists
     "cat > /opt/hytale/bin/hytale-update.sh << 'EOF'\n" +
@@ -200,7 +213,9 @@ function addHytaleUserData(instance: ec2.Instance, downloaderZipAsset: s3assets.
       "EOF",
 
     "chmod +x /opt/hytale/bin/hytale-update.sh",
+  ];
 
+  const systemdUnitsAndStart = [
     // ---- systemd: update service ----
     // Runs on boot ONLY if server isn't installed yet
     "cat > /etc/systemd/system/hytale-update.service << 'EOF'\n" +
@@ -254,6 +269,17 @@ function addHytaleUserData(instance: ec2.Instance, downloaderZipAsset: s3assets.
     // Start updater (only runs if missing files), then server
     "systemctl start hytale-update.service || true",
     "systemctl start hytale.service || true",
+  ];
+
+  const commands = [
+    ...loggingAndSafety,
+    ...tools,
+    ...mountDataVolume,
+    ...java,
+    ...userAndDirs,
+    ...downloadAndInstallDownloader,
+    ...updaterScript,
+    ...systemdUnitsAndStart,
   ];
 
   instance.userData.addCommands(...commands);
