@@ -21,6 +21,12 @@ Install deps:
 npm ci
 ```
 
+Preview changes:
+
+```bash
+npx cdk diff
+```
+
 Deploy (set `AllowedCidr` to your IP `/32` for safety):
 
 ```bash
@@ -31,6 +37,19 @@ Useful outputs from the stack:
 - **`InstanceId`**: used by the `Makefile`
 - **`PublicIp`**: current public IP when running (also see `make ip`)
 - **`DiscordWebhookSecretArn`**: where to store the Discord webhook URL
+
+## Updating the stack (recommended workflow)
+
+For any change (including resizing the EC2 instance), use:
+
+```bash
+npx cdk diff
+npx cdk deploy
+```
+
+Notes:
+- **Changing instance type** typically requires a stop/start, but keeps EBS volumes (so `/opt/hytale` persists).
+- You should **not need to re-auth** unless the instance or data volume is replaced (check `cdk diff` output).
 
 ## Configure the Makefile
 

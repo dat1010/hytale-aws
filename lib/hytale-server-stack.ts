@@ -167,50 +167,50 @@ function addHytaleUserData(instance: ec2.Instance, downloaderZipAsset: s3assets.
     // ---- updater script ----
     // IMPORTANT: this DOES NOT wipe /opt/hytale/server if it already exists
     "cat > /opt/hytale/bin/hytale-update.sh << 'EOF'\n" +
-      "#!/usr/bin/env bash\n" +
-      "set -euxo pipefail\n" +
-      "\n" +
-      "LOG=/opt/hytale/logs/hytale-update.log\n" +
-      "exec >> \"$LOG\" 2>&1\n" +
-      "\n" +
-      "echo \"==== $(date -u) Starting hytale update ====\"\n" +
-      "\n" +
-      "# If the server is already installed, do nothing.\n" +
-      "# This is the key thing that makes stop/start user-friendly.\n" +
-      "if [ -f /opt/hytale/server/Server/HytaleServer.jar ] && [ -f /opt/hytale/server/Assets.zip ]; then\n" +
-      "  echo \"Server already installed. Skipping update to preserve persistence/auth files.\"\n" +
-      "  echo \"==== $(date -u) Update skipped ====\"\n" +
-      "  exit 0\n" +
-      "fi\n" +
-      "\n" +
-      "mkdir -p /opt/hytale/game /opt/hytale/tmp/extracted\n" +
-      "chown -R hytale:hytale /opt/hytale\n" +
-      "\n" +
-      "# Download game.zip using the downloader.\n" +
-      "# NOTE: this may require device auth the very first time.\n" +
-      "# We set HOME=/opt/hytale so creds persist on disk.\n" +
-      "runuser -u hytale -- env HOME=/opt/hytale bash -lc '\n" +
-      "  cd /opt/hytale/downloader && ./hytale-downloader \\\n" +
-      "    -skip-update-check \\\n" +
-      "    -patchline release \\\n" +
-      "    -download-path /opt/hytale/game/game.zip'\n" +
-      "\n" +
-      "test -f /opt/hytale/game/game.zip\n" +
-      "\n" +
-      "rm -rf /opt/hytale/tmp/extracted\n" +
-      "mkdir -p /opt/hytale/tmp/extracted\n" +
-      "unzip -o /opt/hytale/game/game.zip -d /opt/hytale/tmp/extracted\n" +
-      "\n" +
-      "test -d /opt/hytale/tmp/extracted/Server\n" +
-      "test -f /opt/hytale/tmp/extracted/Assets.zip\n" +
-      "\n" +
-      "mkdir -p /opt/hytale/server/Server\n" +
-      "rsync -a /opt/hytale/tmp/extracted/Server/ /opt/hytale/server/Server/\n" +
-      "cp -f /opt/hytale/tmp/extracted/Assets.zip /opt/hytale/server/Assets.zip\n" +
-      "chown -R hytale:hytale /opt/hytale/server /opt/hytale/game\n" +
-      "\n" +
-      "echo \"==== $(date -u) Update complete ====\"\n" +
-      "EOF",
+    "#!/usr/bin/env bash\n" +
+    "set -euxo pipefail\n" +
+    "\n" +
+    "LOG=/opt/hytale/logs/hytale-update.log\n" +
+    "exec >> \"$LOG\" 2>&1\n" +
+    "\n" +
+    "echo \"==== $(date -u) Starting hytale update ====\"\n" +
+    "\n" +
+    "# If the server is already installed, do nothing.\n" +
+    "# This is the key thing that makes stop/start user-friendly.\n" +
+    "if [ -f /opt/hytale/server/Server/HytaleServer.jar ] && [ -f /opt/hytale/server/Assets.zip ]; then\n" +
+    "  echo \"Server already installed. Skipping update to preserve persistence/auth files.\"\n" +
+    "  echo \"==== $(date -u) Update skipped ====\"\n" +
+    "  exit 0\n" +
+    "fi\n" +
+    "\n" +
+    "mkdir -p /opt/hytale/game /opt/hytale/tmp/extracted\n" +
+    "chown -R hytale:hytale /opt/hytale\n" +
+    "\n" +
+    "# Download game.zip using the downloader.\n" +
+    "# NOTE: this may require device auth the very first time.\n" +
+    "# We set HOME=/opt/hytale so creds persist on disk.\n" +
+    "runuser -u hytale -- env HOME=/opt/hytale bash -lc '\n" +
+    "  cd /opt/hytale/downloader && ./hytale-downloader \\\n" +
+    "    -skip-update-check \\\n" +
+    "    -patchline release \\\n" +
+    "    -download-path /opt/hytale/game/game.zip'\n" +
+    "\n" +
+    "test -f /opt/hytale/game/game.zip\n" +
+    "\n" +
+    "rm -rf /opt/hytale/tmp/extracted\n" +
+    "mkdir -p /opt/hytale/tmp/extracted\n" +
+    "unzip -o /opt/hytale/game/game.zip -d /opt/hytale/tmp/extracted\n" +
+    "\n" +
+    "test -d /opt/hytale/tmp/extracted/Server\n" +
+    "test -f /opt/hytale/tmp/extracted/Assets.zip\n" +
+    "\n" +
+    "mkdir -p /opt/hytale/server/Server\n" +
+    "rsync -a /opt/hytale/tmp/extracted/Server/ /opt/hytale/server/Server/\n" +
+    "cp -f /opt/hytale/tmp/extracted/Assets.zip /opt/hytale/server/Assets.zip\n" +
+    "chown -R hytale:hytale /opt/hytale/server /opt/hytale/game\n" +
+    "\n" +
+    "echo \"==== $(date -u) Update complete ====\"\n" +
+    "EOF",
 
     "chmod +x /opt/hytale/bin/hytale-update.sh",
   ];
@@ -219,49 +219,49 @@ function addHytaleUserData(instance: ec2.Instance, downloaderZipAsset: s3assets.
     // ---- systemd: update service ----
     // Runs on boot ONLY if server isn't installed yet
     "cat > /etc/systemd/system/hytale-update.service << 'EOF'\n" +
-      "[Unit]\n" +
-      "Description=Hytale Update (Downloader + Extract)\n" +
-      "After=network-online.target\n" +
-      "Wants=network-online.target\n" +
-      "\n" +
-      "# Only run update if server is NOT installed yet\n" +
-      "ConditionPathExists=!/opt/hytale/server/Server/HytaleServer.jar\n" +
-      "\n" +
-      "[Service]\n" +
-      "Type=oneshot\n" +
-      "TimeoutStartSec=0\n" +
-      "ExecStart=/opt/hytale/bin/hytale-update.sh\n" +
-      "RemainAfterExit=yes\n" +
-      "\n" +
-      "[Install]\n" +
-      "WantedBy=multi-user.target\n" +
-      "EOF",
+    "[Unit]\n" +
+    "Description=Hytale Update (Downloader + Extract)\n" +
+    "After=network-online.target\n" +
+    "Wants=network-online.target\n" +
+    "\n" +
+    "# Only run update if server is NOT installed yet\n" +
+    "ConditionPathExists=!/opt/hytale/server/Server/HytaleServer.jar\n" +
+    "\n" +
+    "[Service]\n" +
+    "Type=oneshot\n" +
+    "TimeoutStartSec=0\n" +
+    "ExecStart=/opt/hytale/bin/hytale-update.sh\n" +
+    "RemainAfterExit=yes\n" +
+    "\n" +
+    "[Install]\n" +
+    "WantedBy=multi-user.target\n" +
+    "EOF",
 
     // ---- systemd: server service ----
     // Starts every boot. Wants the updater to run first if needed.
     "cat > /etc/systemd/system/hytale.service << 'EOF'\n" +
-      "[Unit]\n" +
-      "Description=Hytale Dedicated Server\n" +
-      "After=network-online.target hytale-update.service\n" +
-      "Wants=network-online.target hytale-update.service\n" +
-      "\n" +
-      "[Service]\n" +
-      "Type=simple\n" +
-      "User=hytale\n" +
-      "WorkingDirectory=/opt/hytale/server/Server\n" +
-      "\n" +
-      "# Wait until server files exist (prevents bad boots)\n" +
-      "ExecStartPre=/usr/bin/test -f /opt/hytale/server/Server/HytaleServer.jar\n" +
-      "ExecStartPre=/usr/bin/test -f /opt/hytale/server/Assets.zip\n" +
-      "\n" +
-      "ExecStart=/usr/bin/java -Xms2G -Xmx3G -jar HytaleServer.jar --assets /opt/hytale/server/Assets.zip\n" +
-      "Restart=on-failure\n" +
-      "RestartSec=5\n" +
-      "LimitNOFILE=65535\n" +
-      "\n" +
-      "[Install]\n" +
-      "WantedBy=multi-user.target\n" +
-      "EOF",
+    "[Unit]\n" +
+    "Description=Hytale Dedicated Server\n" +
+    "After=network-online.target hytale-update.service\n" +
+    "Wants=network-online.target hytale-update.service\n" +
+    "\n" +
+    "[Service]\n" +
+    "Type=simple\n" +
+    "User=hytale\n" +
+    "WorkingDirectory=/opt/hytale/server/Server\n" +
+    "\n" +
+    "# Wait until server files exist (prevents bad boots)\n" +
+    "ExecStartPre=/usr/bin/test -f /opt/hytale/server/Server/HytaleServer.jar\n" +
+    "ExecStartPre=/usr/bin/test -f /opt/hytale/server/Assets.zip\n" +
+    "\n" +
+    "ExecStart=/usr/bin/java -Xms2G -Xmx3G -jar HytaleServer.jar --assets /opt/hytale/server/Assets.zip\n" +
+    "Restart=on-failure\n" +
+    "RestartSec=5\n" +
+    "LimitNOFILE=65535\n" +
+    "\n" +
+    "[Install]\n" +
+    "WantedBy=multi-user.target\n" +
+    "EOF",
 
     "systemctl daemon-reload",
     "systemctl enable hytale-update.service hytale.service",
