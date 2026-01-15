@@ -1,14 +1,92 @@
-# Welcome to your CDK TypeScript project
+# Hytale Dedicated Server on AWS (CDK)
 
-This is a blank project for CDK development with TypeScript.
+This repo deploys a small, self-contained AWS setup to run a **Hytale dedicated server** on a single EC2 instance, with a `Makefile` to start/stop and diagnose the server via SSM.
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+Reference docs:
+- Hytale server setup guide: `https://support.hytale.com/hc/en-us/articles/45326769420827-Hytale-Server-Manual#server-setup`
+- Server provider auth guide (future): `https://support.hytale.com/hc/en-us/articles/45328341414043-Server-Provider-Authentication-Guide`
 
-## Useful commands
+## Prerequisites (WSL-friendly)
 
-* `npm run build`   compile typescript to js
-* `npm run watch`   watch for changes and compile
-* `npm run test`    perform the jest unit tests
-* `npx cdk deploy`  deploy this stack to your default AWS account/region
-* `npx cdk diff`    compare deployed stack with current state
-* `npx cdk synth`   emits the synthesized CloudFormation template
+- **AWS CLI** configured (`aws configure` or env creds)
+- **Node.js + npm**
+- **CDK** (uses `npx cdk ...`)
+- (Recommended) **Session Manager plugin** for interactive `make ssm` sessions
+
+## Deploy
+
+Install deps:
+
+```bash
+npm ci
+```
+
+Deploy (set `AllowedCidr` to your IP `/32` for safety):
+
+```bash
+npx cdk deploy --parameters AllowedCidr=YOUR.IP.ADDRESS.HERE/32
+```
+
+Useful outputs from the stack:
+- **`InstanceId`**: used by the `Makefile`
+- **`PublicIp`**: current public IP when running (also see `make ip`)
+- **`DiscordWebhookSecretArn`**: where to store the Discord webhook URL
+
+## Configure the Makefile
+
+The `Makefile` defaults are near the top:
+- **`AWS_REGION`** (default `us-east-1`)
+- **`INSTANCE_ID`** (set this to the stack output `InstanceId`)
+- **`PORT`** (default `5520`)
+
+You can override per-command:
+
+```bash
+make status AWS_REGION=us-east-1 INSTANCE_ID=i-xxxxxxxxxxxxxxxxx
+```
+
+## Make commands
+
+- **`make up`**: start the EC2 instance
+- **`make down`**: stop the EC2 instance
+- **`make status`**: show EC2 state + IPs + instance type
+- **`make ip`**: print `public-ip:5520` (fails if the instance is stopped)
+- **`make ssm`**: open an interactive SSM session (requires Session Manager plugin)
+- **`make check`**: show `systemctl` status for the Hytale service
+- **`make logs`**: tail the Hytale service logs (journalctl)
+- **`make update-logs`**: tail the one-time updater logs (journalctl)
+- **`make port`**: check if something is listening on UDP 5520
+- **`make service-restart`**: restart the Hytale service
+- **`make units`**: show unit file + status for both hytale services
+- **`make diag`**: full bootstrap diagnostics (cloud-init + systemd + journald)
+
+## Discord webhook secret (Secrets Manager)
+
+After the stack is deployed, store the Discord webhook URL in the secret created by the stack.
+
+```bash
+REGION="us-east-1"
+STACK="HytaleServerStack"
+DISCORD_WEBHOOK_URL="YOUR_DISCORD_WEBHOOK_URL"
+
+SECRET_ARN="$(aws cloudformation describe-stacks \
+  --region "$REGION" \
+  --stack-name "$STACK" \
+  --query "Stacks[0].Outputs[?OutputKey=='DiscordWebhookSecretArn'].OutputValue" \
+  --output text)"
+
+aws secretsmanager put-secret-value \
+  --region "$REGION" \
+  --secret-id "$SECRET_ARN" \
+  --secret-string "$DISCORD_WEBHOOK_URL"
+```
+
+Optional verification:
+
+```bash
+aws secretsmanager get-secret-value \
+  --region "$REGION" \
+  --secret-id "$SECRET_ARN" \
+  --query SecretString \
+  --output text
+```
