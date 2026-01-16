@@ -21,10 +21,30 @@ Install deps:
 npm ci
 ```
 
+## Backups (survive `cdk destroy`)
+
+This repo includes an AWS Backup setup that snapshots any supported AWS resources tagged `Backup=Hytale`.
+
+- The EC2 instance is tagged `Backup=Hytale`
+- Tags are propagated to its EBS volumes on creation
+- `HytaleBackupStack` creates a **Backup Vault** with `RemovalPolicy.RETAIN`, so your recovery points remain even if you destroy the server stack
+
+Deploy backups first (do this once):
+
+```bash
+npx cdk deploy HytaleBackupStack
+```
+
 Deploy (set `AllowedCidr` to your IP `/32` for safety):
 
 ```bash
 npx cdk deploy --parameters AllowedCidr=YOUR.IP.ADDRESS.HERE/32
+```
+
+Destroy ONLY the server (keep backups):
+
+```bash
+npx cdk destroy HytaleServerStack
 ```
 
 Useful outputs from the stack:

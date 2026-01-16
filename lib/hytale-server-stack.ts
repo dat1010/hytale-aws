@@ -11,6 +11,8 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as s3assets from "aws-cdk-lib/aws-s3-assets";
 
 const HYTALE_UDP_PORT = 5520;
+const BACKUP_TAG_KEY = "Backup";
+const BACKUP_TAG_VALUE = "Hytale";
 
 type NetworkResources = {
   vpc: ec2.Vpc;
@@ -32,6 +34,10 @@ export class HytaleServerStack extends cdk.Stack {
     const role = createInstanceRole(this);
     const downloaderZipAsset = createDownloaderAsset(this);
     const instance = createInstance(this, vpc, sg, role);
+
+    // Tag the instance for backups (and propagate tags to EBS volumes on creation).
+    // The BackupPlan in `HytaleBackupStack` uses tag-based selection to include this instance's volumes.
+    cdk.Tags.of(instance).add(BACKUP_TAG_KEY, BACKUP_TAG_VALUE);
 
     downloaderZipAsset.grantRead(instance.role);
     addHytaleUserData(instance, downloaderZipAsset);
@@ -93,6 +99,8 @@ function createInstance(
     machineImage: ec2.MachineImage.latestAmazonLinux2023({
       cpuType: ec2.AmazonLinuxCpuType.X86_64,
     }),
+    // Ensure the instance tag(s) propagate to EBS volumes so AWS Backup can select them by tag.
+    propagateTagsToVolumeOnCreation: true,
     blockDevices: [
       {
         deviceName: "/dev/xvda",
