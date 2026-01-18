@@ -58,9 +58,27 @@ Useful outputs from the stack:
 
 ## Configure the Makefile
 
-The `Makefile` defaults are near the top:
-- **`AWS_REGION`** (default `us-east-1`)
+This repo is easiest to use with [`direnv`](https://direnv.net/) so your AWS/instance settings are picked up automatically by `make`.
+
+1) Copy the example file:
+
+```bash
+cp .envrc.example .envrc
+```
+
+2) Edit `.envrc` and set:
+- **`AWS_REGION`** (defaults to `us-east-1` if unset)
 - **`INSTANCE_ID`** (set this to the stack output `InstanceId`)
+
+3) Allow `direnv`:
+
+```bash
+direnv allow
+```
+
+If you see errors like `./.envrc:7: $'\r': command not found`, your `.envrc` has Windows (CRLF) line endings. Convert it to LF (example: `dos2unix .envrc`) or configure your editor to save `.envrc` with LF.
+
+The `Makefile` also supports:
 - **`PORT`** (default `5520`)
 
 You can override per-command:

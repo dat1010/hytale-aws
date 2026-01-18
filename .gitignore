@@ -3,6 +3,9 @@
 *.d.ts
 node_modules
 
+# Local direnv config (contains instance id / region overrides)
+.envrc
+
 # CDK asset staging directory
 .cdk.staging
 cdk.out

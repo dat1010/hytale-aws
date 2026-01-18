@@ -1,10 +1,19 @@
 SHELL := /bin/bash
 
 AWS_REGION ?= us-east-1
-INSTANCE_ID ?= i-09c7146fcc5e940cb
+# Prefer setting this via `.envrc` (direnv) or environment variables.
+INSTANCE_ID ?=
 PORT ?= 5520
 
+# Defensive: if env/direnv injects a trailing CR (Windows/CRLF), strip it so AWS CLI doesn't reject values.
+AWS_REGION := $(strip $(AWS_REGION))
+INSTANCE_ID := $(strip $(INSTANCE_ID))
+
 .PHONY: up down status ip ssm check logs port service-restart
+
+ifndef INSTANCE_ID
+  $(error INSTANCE_ID is not set. Set it in .envrc (direnv) or pass INSTANCE_ID=... to make)
+endif
 
 up:
 	@echo "Starting $(INSTANCE_ID) in $(AWS_REGION)..."
