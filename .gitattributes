@@ -1,0 +1,3 @@
+# Keep shell-ish config files in LF even on Windows checkouts (prevents $'\r' errors).
+.envrc* text eol=lf
+

@@ -21,22 +21,64 @@ Install deps:
 npm ci
 ```
 
+## Backups (Hytale → S3, survive `cdk destroy`)
+
+Hytale supports automatic backups via `--backup` / `--backup-dir` / `--backup-frequency`. This repo uses that built-in backup output and periodically uploads it to an **S3 bucket** that lives in a separate stack.
+
+- `HytaleServerStack` runs the server with:
+  - `--backup`
+  - `--backup-dir /opt/hytale/backups`
+  - `--backup-frequency 30` (minutes)
+- A `systemd` timer runs every ~30 minutes to `aws s3 sync` `/opt/hytale/backups` to S3 and **prunes S3 to keep only the latest 5 backups**.
+- `HytaleDataStack` owns the S3 bucket and can be deployed once and kept forever.
+
+Deploy the data stack first (do this once):
+
+```bash
+npx cdk deploy HytaleDataStack
+```
+
 Deploy (set `AllowedCidr` to your IP `/32` for safety):
 
 ```bash
 npx cdk deploy --parameters AllowedCidr=YOUR.IP.ADDRESS.HERE/32
 ```
 
+Destroy ONLY the server (keep backups in S3):
+
+```bash
+npx cdk destroy HytaleServerStack
+```
+
 Useful outputs from the stack:
 - **`InstanceId`**: used by the `Makefile`
 - **`PublicIp`**: current public IP when running (also see `make ip`)
 - **`DiscordWebhookSecretArn`**: where to store the Discord webhook URL
+- **`BackupsBucketName`**: S3 bucket where backups are stored
 
 ## Configure the Makefile
 
-The `Makefile` defaults are near the top:
-- **`AWS_REGION`** (default `us-east-1`)
+This repo is easiest to use with [`direnv`](https://direnv.net/) so your AWS/instance settings are picked up automatically by `make`.
+
+1) Copy the example file:
+
+```bash
+cp .envrc.example .envrc
+```
+
+2) Edit `.envrc` and set:
+- **`AWS_REGION`** (defaults to `us-east-1` if unset)
 - **`INSTANCE_ID`** (set this to the stack output `InstanceId`)
+
+3) Allow `direnv`:
+
+```bash
+direnv allow
+```
+
+If you see errors like `./.envrc:7: $'\r': command not found`, your `.envrc` has Windows (CRLF) line endings. Convert it to LF (example: `dos2unix .envrc`) or configure your editor to save `.envrc` with LF.
+
+The `Makefile` also supports:
 - **`PORT`** (default `5520`)
 
 You can override per-command:

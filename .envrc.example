@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#
+# Example direnv config. Copy to .envrc and run: direnv allow
+#
+# NOTE: `.envrc` is intentionally not committed (contains your instance id).
+#
+
+export AWS_REGION='us-east-1'
+export INSTANCE_ID='i-xxxxxxxxxxxxxxxxx'
+
