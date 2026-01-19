@@ -9,12 +9,16 @@ import {
 const sm = new SecretsManagerClient({});
 const ec2 = new EC2Client({});
 
-async function getWebhookUrl(secretArn: string): Promise<string> {
-  const out = await sm.send(new GetSecretValueCommand({ SecretId: secretArn }));
-  if (!out.SecretString) {
-    throw new Error("Discord webhook secret has no SecretString");
+async function getWebhookUrl(secretArn: string): Promise<string | undefined> {
+  try {
+    const out = await sm.send(new GetSecretValueCommand({ SecretId: secretArn }));
+    const s = out.SecretString?.trim();
+    if (!s || s === "None" || s === "null") return undefined;
+    return s;
+  } catch {
+    // If the secret doesn't exist yet / has no value, Discord is effectively disabled.
+    return undefined;
   }
-  return out.SecretString;
 }
 
 function sleep(ms: number) {
@@ -74,9 +78,10 @@ export async function handler(event: Ec2StateChangeEvent) {
   }
 
   const secretArn = process.env.DISCORD_WEBHOOK_SECRET_ARN;
-  if (!secretArn) throw new Error("Missing env var DISCORD_WEBHOOK_SECRET_ARN");
+  if (!secretArn) return { ok: true, skipped: true, reason: "missing DISCORD_WEBHOOK_SECRET_ARN" };
 
   const webhook = await getWebhookUrl(secretArn);
+  if (!webhook) return { ok: true, skipped: true, reason: "discord webhook not configured" };
 
   const port = process.env.SERVER_PORT || "5520";
   const maxWaitSeconds = Math.max(0, Number(process.env.MAX_WAIT_SECONDS || "45"));

@@ -12,11 +12,6 @@ import * as s3assets from "aws-cdk-lib/aws-s3-assets";
 import * as s3 from "aws-cdk-lib/aws-s3";
 
 const HYTALE_UDP_PORT = 5520;
-const HYTALE_BACKUP_DIR = "/opt/hytale/backups";
-const HYTALE_BACKUP_FREQUENCY_MINUTES = 30;
-const S3_SYNC_FREQUENCY_MINUTES = 30;
-const S3_KEEP_LATEST_BACKUPS = 5;
-const S3_BACKUP_PREFIX = "hytale/backups/";
 
 type NetworkResources = {
   vpc: ec2.Vpc;
@@ -35,6 +30,21 @@ export class HytaleServerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: HytaleServerStackProps) {
     super(scope, id, props);
 
+    // Discord integration is optional. Default: enabled (recommended).
+    // Disable with: `npx cdk deploy -c discordEnabled=false`
+    const discordEnabled = getBooleanContext(this, "discordEnabled", true);
+
+    // Optional: provide the webhook at deploy time.
+    // NOTE: This uses a CloudFormation NoEcho parameter, so you can pass it from `.envrc` without
+    // needing a post-deploy `put-secret-value` step.
+    const discordWebhookUrlParam = new cdk.CfnParameter(this, "DiscordWebhookUrl", {
+      type: "String",
+      default: "null",
+      noEcho: true,
+      description:
+        "Discord webhook URL for notifications/auth links. Leave as 'null' to disable Discord posting.",
+    });
+
     const allowedCidr = new cdk.CfnParameter(this, "AllowedCidr", {
       type: "String",
       default: "0.0.0.0/0",
@@ -45,7 +55,32 @@ export class HytaleServerStack extends cdk.Stack {
     const { vpc, sg } = createVpcAndSecurityGroup(this, allowedCidr.valueAsString);
     const role = createInstanceRole(this);
     const downloaderZipAsset = createDownloaderAsset(this);
+    const bootstrapAsset = createBootstrapAsset(this);
     const instance = createInstance(this, vpc, sg, role);
+
+    let discordWebhookSecretArn: string | undefined;
+    if (discordEnabled) {
+      // Discord webhook secret (optional).
+      // If left unset, Discord notifications/auth messages are simply skipped.
+      // IMPORTANT: this construct ID must not collide with the `DiscordWebhookUrl` parameter above.
+      const discordWebhookSecret = new secretsmanager.Secret(this, "DiscordWebhookSecret", {
+        description: "Discord webhook URL for Hytale server notifications",
+        secretStringValue: cdk.SecretValue.cfnParameter(discordWebhookUrlParam),
+      });
+      discordWebhookSecretArn = discordWebhookSecret.secretArn;
+
+      // Allow the instance to read the webhook so it can post auth URLs during bootstrap.
+      discordWebhookSecret.grantRead(instance.role);
+      instance.role.addToPrincipalPolicy(
+        new iam.PolicyStatement({
+          actions: ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+          resources: [discordWebhookSecret.secretArn],
+        })
+      );
+
+      createDiscordNotifier(this, instance, discordWebhookSecret);
+      new cdk.CfnOutput(this, "DiscordWebhookSecretArn", { value: discordWebhookSecret.secretArn });
+    }
 
     // Allow instance to upload backups to S3.
     // `aws s3 sync` requires ListBucket + GetBucketLocation on the bucket, plus PutObject on objects.
@@ -58,9 +93,16 @@ export class HytaleServerStack extends cdk.Stack {
     );
 
     downloaderZipAsset.grantRead(instance.role);
-    addHytaleUserData(instance, downloaderZipAsset, props.backupBucket.bucketName);
-    createDiscordNotifier(this, instance);
+    bootstrapAsset.grantRead(instance.role);
+    addHytaleUserData(instance, {
+      bootstrapAsset,
+      downloaderZipAsset,
+      backupBucketName: props.backupBucket.bucketName,
+      discordWebhookSecretArn,
+    });
 
+    new cdk.CfnOutput(this, "InstanceId", { value: instance.instanceId });
+    new cdk.CfnOutput(this, "PublicIp", { value: instance.instancePublicIp });
     new cdk.CfnOutput(this, "BackupsBucketName", { value: props.backupBucket.bucketName });
   }
 }
@@ -104,6 +146,14 @@ function createDownloaderAsset(scope: Construct): s3assets.Asset {
   });
 }
 
+function createBootstrapAsset(scope: Construct): s3assets.Asset {
+  // This directory is uploaded as a zip asset during deploy.
+  // We keep EC2 UserData tiny to avoid the EC2 user-data size limit.
+  return new s3assets.Asset(scope, "HytaleBootstrap", {
+    path: path.join(__dirname, "..", "assets", "bootstrap"),
+  });
+}
+
 function createInstance(
   scope: Construct,
   vpc: ec2.Vpc,
@@ -140,317 +190,39 @@ function createInstance(
 
 function addHytaleUserData(
   instance: ec2.Instance,
-  downloaderZipAsset: s3assets.Asset,
-  backupBucketName: string
+  opts: {
+    bootstrapAsset: s3assets.Asset;
+    downloaderZipAsset: s3assets.Asset;
+    backupBucketName: string;
+    discordWebhookSecretArn?: string;
+  }
 ) {
-  // ----------------------------
-  // UserData - full automation
-  // ----------------------------
-  // Split into logical groups for readability. Keep command strings and ordering identical.
-  const loggingAndSafety = [
-    // Log user-data for easy debugging
+  // Keep EC2 user-data tiny (EC2 has a small size limit for user-data).
+  const commands = [
     "exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1",
     "set -euxo pipefail",
-  ];
-
-  const tools = [
-    // tools
-    "dnf install -y --allowerasing curl-minimal unzip tar rsync awscli python3",
-  ];
-
-  const mountDataVolume = [
-    // Mount /dev/xvdb at /opt/hytale
-    "if ! file -s /dev/xvdb | grep -q ext4; then mkfs -t ext4 /dev/xvdb; fi",
-    "mkdir -p /opt/hytale",
-    "grep -q '^/dev/xvdb /opt/hytale ' /etc/fstab || echo '/dev/xvdb /opt/hytale ext4 defaults,nofail 0 2' >> /etc/fstab",
-    "mount -a",
-  ];
-
-  const java = [
-    // Java 25
-    "rpm --import https://yum.corretto.aws/corretto.key",
-    "curl -fsSL https://yum.corretto.aws/corretto.repo -o /etc/yum.repos.d/corretto.repo",
-    "dnf clean all",
-    "dnf install -y java-25-amazon-corretto-headless",
-  ];
-
-  const userAndDirs = [
-    // User + dirs
-    "useradd -r -m -d /opt/hytale -s /sbin/nologin hytale || true",
-    `mkdir -p /opt/hytale/downloader /opt/hytale/server /opt/hytale/game /opt/hytale/logs /opt/hytale/tmp /opt/hytale/bin ${HYTALE_BACKUP_DIR}`,
-    "chown -R hytale:hytale /opt/hytale",
-  ];
-
-  const downloadAndInstallDownloader = [
-    // Pull the downloader zip asset to the instance
-    `aws s3 cp s3://${downloaderZipAsset.s3BucketName}/${downloaderZipAsset.s3ObjectKey} /opt/hytale/tmp/hytale-downloader.zip`,
-    "unzip -o /opt/hytale/tmp/hytale-downloader.zip -d /opt/hytale/downloader",
-
-    // Normalize linux downloader binary name + perms
-    "test -f /opt/hytale/downloader/hytale-downloader-linux-amd64",
-    "cp -f /opt/hytale/downloader/hytale-downloader-linux-amd64 /opt/hytale/downloader/hytale-downloader",
-    "chmod +x /opt/hytale/downloader/hytale-downloader",
-    "chown -R hytale:hytale /opt/hytale/downloader",
-  ];
-
-  const updaterScript = [
-    // ---- updater script ----
-    // IMPORTANT: this DOES NOT wipe /opt/hytale/server if it already exists
-    "cat > /opt/hytale/bin/hytale-update.sh << 'EOF'\n" +
-      "#!/usr/bin/env bash\n" +
-      "set -euxo pipefail\n" +
-      "\n" +
-      "LOG=/opt/hytale/logs/hytale-update.log\n" +
-      "exec >> \"$LOG\" 2>&1\n" +
-      "\n" +
-      "echo \"==== $(date -u) Starting hytale update ====\"\n" +
-      "\n" +
-      "# If the server is already installed, do nothing.\n" +
-      "# This is the key thing that makes stop/start user-friendly.\n" +
-      "if [ -f /opt/hytale/server/Server/HytaleServer.jar ] && [ -f /opt/hytale/server/Assets.zip ]; then\n" +
-      "  echo \"Server already installed. Skipping update to preserve persistence/auth files.\"\n" +
-      "  echo \"==== $(date -u) Update skipped ====\"\n" +
-      "  exit 0\n" +
-      "fi\n" +
-      "\n" +
-      "mkdir -p /opt/hytale/game /opt/hytale/tmp/extracted\n" +
-      "chown -R hytale:hytale /opt/hytale\n" +
-      "\n" +
-      "# Download game.zip using the downloader.\n" +
-      "# NOTE: this may require device auth the very first time.\n" +
-      "# We set HOME=/opt/hytale so creds persist on disk.\n" +
-      "runuser -u hytale -- env HOME=/opt/hytale bash -lc '\n" +
-      "  cd /opt/hytale/downloader && ./hytale-downloader \\\n" +
-      "    -skip-update-check \\\n" +
-      "    -patchline release \\\n" +
-      "    -download-path /opt/hytale/game/game.zip'\n" +
-      "\n" +
-      "test -f /opt/hytale/game/game.zip\n" +
-      "\n" +
-      "rm -rf /opt/hytale/tmp/extracted\n" +
-      "mkdir -p /opt/hytale/tmp/extracted\n" +
-      "unzip -o /opt/hytale/game/game.zip -d /opt/hytale/tmp/extracted\n" +
-      "\n" +
-      "test -d /opt/hytale/tmp/extracted/Server\n" +
-      "test -f /opt/hytale/tmp/extracted/Assets.zip\n" +
-      "\n" +
-      "mkdir -p /opt/hytale/server/Server\n" +
-      "rsync -a /opt/hytale/tmp/extracted/Server/ /opt/hytale/server/Server/\n" +
-      "cp -f /opt/hytale/tmp/extracted/Assets.zip /opt/hytale/server/Assets.zip\n" +
-      "chown -R hytale:hytale /opt/hytale/server /opt/hytale/game\n" +
-      "\n" +
-      "echo \"==== $(date -u) Update complete ====\"\n" +
-      "EOF",
-
-    "chmod +x /opt/hytale/bin/hytale-update.sh",
-  ];
-
-  const systemdUnitsAndStart = [
-    // ---- systemd: update service ----
-    // Runs on boot ONLY if server isn't installed yet
-    "cat > /etc/systemd/system/hytale-update.service << 'EOF'\n" +
-      "[Unit]\n" +
-      "Description=Hytale Update (Downloader + Extract)\n" +
-      "After=network-online.target\n" +
-      "Wants=network-online.target\n" +
-      "\n" +
-      "# Only run update if server is NOT installed yet\n" +
-      "ConditionPathExists=!/opt/hytale/server/Server/HytaleServer.jar\n" +
-      "\n" +
-      "[Service]\n" +
-      "Type=oneshot\n" +
-      "TimeoutStartSec=0\n" +
-      "ExecStart=/opt/hytale/bin/hytale-update.sh\n" +
-      "RemainAfterExit=yes\n" +
-      "\n" +
-      "[Install]\n" +
-      "WantedBy=multi-user.target\n" +
-      "EOF",
-
-    // ---- systemd: server service ----
-    // Starts every boot. Wants the updater to run first if needed.
-    "cat > /etc/systemd/system/hytale.service << 'EOF'\n" +
-      "[Unit]\n" +
-      "Description=Hytale Dedicated Server\n" +
-      "After=network-online.target hytale-update.service\n" +
-      "Wants=network-online.target hytale-update.service\n" +
-      "\n" +
-      "[Service]\n" +
-      "Type=simple\n" +
-      "User=hytale\n" +
-      "WorkingDirectory=/opt/hytale/server/Server\n" +
-      "\n" +
-      "# Wait until server files exist (prevents bad boots)\n" +
-      "ExecStartPre=/usr/bin/test -f /opt/hytale/server/Server/HytaleServer.jar\n" +
-      "ExecStartPre=/usr/bin/test -f /opt/hytale/server/Assets.zip\n" +
-      "\n" +
-      "ExecStart=/usr/bin/java -Xms2G -Xmx3G -jar HytaleServer.jar --assets /opt/hytale/server/Assets.zip --backup --backup-dir " +
-      HYTALE_BACKUP_DIR +
-      " --backup-frequency " +
-      HYTALE_BACKUP_FREQUENCY_MINUTES +
-      "\n" +
-      "Restart=on-failure\n" +
-      "RestartSec=5\n" +
-      "LimitNOFILE=65535\n" +
-      "\n" +
-      "[Install]\n" +
-      "WantedBy=multi-user.target\n" +
-      "EOF",
-
-    // ---- backup sync script + timer ----
-    "cat > /opt/hytale/bin/hytale-backup-sync.sh << 'EOF'\n" +
-      "#!/usr/bin/env bash\n" +
-      "set -euo pipefail\n" +
-      "\n" +
-      "SRC=\"" +
-      HYTALE_BACKUP_DIR +
-      "\"\n" +
-      "DEST_BUCKET=\"" +
-      backupBucketName +
-      "\"\n" +
-      "DEST_PREFIX=\"" +
-      S3_BACKUP_PREFIX +
-      "\"\n" +
-      "KEEP_LATEST=" +
-      S3_KEEP_LATEST_BACKUPS +
-      "\n" +
-      "\n" +
-      "if [ ! -d \"$SRC\" ]; then\n" +
-      "  exit 0\n" +
-      "fi\n" +
-      "\n" +
-      "# Determine region via IMDSv2 (no local aws config needed)\n" +
-      "TOKEN=$(curl -sS -X PUT \"http://169.254.169.254/latest/api/token\" -H \"X-aws-ec2-metadata-token-ttl-seconds: 21600\")\n" +
-      "DOC=$(curl -sS -H \"X-aws-ec2-metadata-token: $TOKEN\" \"http://169.254.169.254/latest/dynamic/instance-identity/document\")\n" +
-      "REGION=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())[\"region\"])' <<<\"$DOC\")\n" +
-      "export DEST_BUCKET DEST_PREFIX KEEP_LATEST REGION\n" +
-      "\n" +
-      "# Upload backups (no --delete: keep historical backups in S3)\n" +
-      "aws --region \"$REGION\" s3 sync \"$SRC\" \"s3://$DEST_BUCKET/$DEST_PREFIX\" --only-show-errors\n" +
-      "\n" +
-      "# Prune S3 to keep only the latest N backups by *backup name*.\n" +
-      "# We group objects by the first path component after DEST_PREFIX (handles backups as files or folders).\n" +
-      "python3 - <<'PY'\n" +
-      "import json\n" +
-      "import os\n" +
-      "import subprocess\n" +
-      "from collections import defaultdict\n" +
-      "\n" +
-      "bucket = os.environ.get('DEST_BUCKET')\n" +
-      "prefix = os.environ.get('DEST_PREFIX', '')\n" +
-      "keep = int(os.environ.get('KEEP_LATEST', '5'))\n" +
-      "region = os.environ.get('REGION')\n" +
-      "\n" +
-      "if not bucket or keep <= 0:\n" +
-      "    raise SystemExit(0)\n" +
-      "\n" +
-      "cmd = ['aws', '--region', region, 's3api', 'list-objects-v2', '--bucket', bucket, '--prefix', prefix, '--output', 'json']\n" +
-      "raw = subprocess.check_output(cmd)\n" +
-      "data = json.loads(raw)\n" +
-      "objs = data.get('Contents', []) or []\n" +
-      "if not objs:\n" +
-      "    raise SystemExit(0)\n" +
-      "\n" +
-      "groups = defaultdict(list)\n" +
-      "for o in objs:\n" +
-      "    key = o.get('Key', '')\n" +
-      "    if not key or not key.startswith(prefix):\n" +
-      "        continue\n" +
-      "    rest = key[len(prefix):]\n" +
-      "    if not rest:\n" +
-      "        continue\n" +
-      "    group = rest.split('/', 1)[0]\n" +
-      "    if not group:\n" +
-      "        continue\n" +
-      "    groups[group].append(o)\n" +
-      "\n" +
-      "ranked = []\n" +
-      "for group, items in groups.items():\n" +
-      "    # LastModified is ISO8601-ish; lexicographic compare works.\n" +
-      "    latest = max(i.get('LastModified', '') for i in items)\n" +
-      "    ranked.append((latest, group))\n" +
-      "ranked.sort(reverse=True)\n" +
-      "\n" +
-      "keep_groups = {g for _, g in ranked[:keep]}\n" +
-      "delete_keys = []\n" +
-      "for group, items in groups.items():\n" +
-      "    if group in keep_groups:\n" +
-      "        continue\n" +
-      "    for i in items:\n" +
-      "        k = i.get('Key')\n" +
-      "        if k:\n" +
-      "            delete_keys.append(k)\n" +
-      "\n" +
-      "if not delete_keys:\n" +
-      "    raise SystemExit(0)\n" +
-      "\n" +
-      "# delete-objects supports up to 1000 keys per request\n" +
-      "for start in range(0, len(delete_keys), 1000):\n" +
-      "    chunk = delete_keys[start:start+1000]\n" +
-      "    payload = {'Objects': [{'Key': k} for k in chunk], 'Quiet': True}\n" +
-      "    subprocess.check_call([\n" +
-      "        'aws', '--region', region, 's3api', 'delete-objects', '--bucket', bucket, '--delete', json.dumps(payload)\n" +
-      "    ])\n" +
-      "PY\n" +
-      "EOF",
-    "chmod +x /opt/hytale/bin/hytale-backup-sync.sh",
-
-    "cat > /etc/systemd/system/hytale-backup-sync.service << 'EOF'\n" +
-      "[Unit]\n" +
-      "Description=Sync Hytale backups to S3\n" +
-      "After=network-online.target\n" +
-      "Wants=network-online.target\n" +
-      "\n" +
-      "[Service]\n" +
-      "Type=oneshot\n" +
-      "ExecStart=/opt/hytale/bin/hytale-backup-sync.sh\n" +
-      "EOF",
-
-    "cat > /etc/systemd/system/hytale-backup-sync.timer << 'EOF'\n" +
-      "[Unit]\n" +
-      "Description=Periodic Hytale backup upload to S3\n" +
-      "\n" +
-      "[Timer]\n" +
-      "OnBootSec=10min\n" +
-      "OnUnitActiveSec=" +
-      S3_SYNC_FREQUENCY_MINUTES +
-      "min\n" +
-      "Persistent=true\n" +
-      "\n" +
-      "[Install]\n" +
-      "WantedBy=timers.target\n" +
-      "EOF",
-
-    "systemctl daemon-reload",
-    "systemctl enable hytale-update.service hytale.service hytale-backup-sync.timer",
-
-    // Start updater (only runs if missing files), then server
-    "systemctl start hytale-update.service || true",
-    "systemctl start hytale.service || true",
-    "systemctl start hytale-backup-sync.timer || true",
-  ];
-
-  const commands = [
-    ...loggingAndSafety,
-    ...tools,
-    ...mountDataVolume,
-    ...java,
-    ...userAndDirs,
-    ...downloadAndInstallDownloader,
-    ...updaterScript,
-    ...systemdUnitsAndStart,
+    "dnf install -y --allowerasing awscli unzip",
+    "mkdir -p /var/tmp/hytale-bootstrap",
+    `aws s3 cp s3://${opts.bootstrapAsset.s3BucketName}/${opts.bootstrapAsset.s3ObjectKey} /var/tmp/hytale-bootstrap/bootstrap.zip`,
+    "unzip -o /var/tmp/hytale-bootstrap/bootstrap.zip -d /var/tmp/hytale-bootstrap",
+    "chmod +x /var/tmp/hytale-bootstrap/bootstrap.sh",
+    [
+      `DOWNLOADER_ASSET_BUCKET="${opts.downloaderZipAsset.s3BucketName}"`,
+      `DOWNLOADER_ASSET_KEY="${opts.downloaderZipAsset.s3ObjectKey}"`,
+      `BACKUP_BUCKET_NAME="${opts.backupBucketName}"`,
+      `DISCORD_WEBHOOK_SECRET_ARN="${opts.discordWebhookSecretArn ?? ""}"`,
+      "bash /var/tmp/hytale-bootstrap/bootstrap.sh",
+    ].join(" "),
   ];
 
   instance.userData.addCommands(...commands);
 }
 
-function createDiscordNotifier(scope: Construct, instance: ec2.Instance) {
-  // Discord webhook secret (optional)
-  // Set its value using the `DiscordWebhookSecretArn` stack output + `aws secretsmanager put-secret-value`.
-  const discordWebhookSecret = new secretsmanager.Secret(scope, "DiscordWebhookUrl", {
-    description: "Discord webhook URL for Hytale server notifications",
-  });
-
+function createDiscordNotifier(
+  scope: Construct,
+  instance: ec2.Instance,
+  discordWebhookSecret: secretsmanager.ISecret
+) {
   const notifyFn = new lambdaNodejs.NodejsFunction(scope, "NotifyDiscordOnStart", {
     runtime: lambda.Runtime.NODEJS_20_X,
     entry: path.join(__dirname, "lambda", "notify-discord.ts"),
@@ -486,9 +258,18 @@ function createDiscordNotifier(scope: Construct, instance: ec2.Instance) {
   });
 
   rule.addTarget(new targets.LambdaFunction(notifyFn));
+}
 
-  new cdk.CfnOutput(scope, "InstanceId", { value: instance.instanceId });
-  new cdk.CfnOutput(scope, "PublicIp", { value: instance.instancePublicIp });
-  new cdk.CfnOutput(scope, "DiscordWebhookSecretArn", { value: discordWebhookSecret.secretArn });
+function getBooleanContext(scope: Construct, key: string, defaultValue: boolean): boolean {
+  const raw = scope.node.tryGetContext(key);
+  if (raw === undefined || raw === null) return defaultValue;
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "string") {
+    const s = raw.trim().toLowerCase();
+    if (["1", "true", "yes", "y", "on"].includes(s)) return true;
+    if (["0", "false", "no", "n", "off"].includes(s)) return false;
+  }
+  // Fall back to default to avoid surprising synth errors.
+  return defaultValue;
 }
 
