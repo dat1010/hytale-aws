@@ -4,12 +4,14 @@ AWS_REGION ?= us-east-1
 # Prefer setting this via `.envrc` (direnv) or environment variables.
 INSTANCE_ID ?=
 PORT ?= 5520
+STACK ?= HytaleServerStack
+ENVRC ?= .envrc
 
 # Defensive: if env/direnv injects a trailing CR (Windows/CRLF), strip it so AWS CLI doesn't reject values.
 AWS_REGION := $(strip $(AWS_REGION))
 INSTANCE_ID := $(strip $(INSTANCE_ID))
 
-.PHONY: up down status ip ssm check logs port service-restart
+.PHONY: up down status ip ssm check logs update-logs units diag port service-restart envrc-update
 
 ifndef INSTANCE_ID
   $(error INSTANCE_ID is not set. Set it in .envrc (direnv) or pass INSTANCE_ID=... to make)
@@ -60,7 +62,7 @@ logs:
 	@CMD_ID=$$(aws ssm send-command --region $(AWS_REGION) --instance-ids $(INSTANCE_ID) \
 		--document-name AWS-RunShellScript \
 		--comment "Show last 200 hytale logs" \
-		--parameters '{"commands":["sudo journalctl -u hytale -n 200 --no-pager || true"]}' \
+		--parameters '{"commands":["echo \"== /opt/hytale/logs/hytale-server.log (tail) ==\"; sudo tail -n 200 /opt/hytale/logs/hytale-server.log || true; echo; echo \"== journalctl -u hytale (systemd only) ==\"; sudo journalctl -u hytale -n 200 --no-pager || true"]}' \
 		--query 'Command.CommandId' --output text); \
 	echo "CommandId=$$CMD_ID"; \
 	sleep 2; \
@@ -133,4 +135,30 @@ diag:
 	aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardOutputContent' --output text; \
 	echo "---- STDERR ----"; \
 	aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardErrorContent' --output text
+
+envrc-update:
+	@set -euo pipefail; \
+	if [ ! -f "$(ENVRC)" ] && [ -f ".envrc.example" ]; then \
+		echo "Creating $(ENVRC) from .envrc.example"; \
+		cp .envrc.example "$(ENVRC)"; \
+	fi; \
+	NEW_ID=$$(aws cloudformation describe-stacks --region "$(AWS_REGION)" --stack-name "$(STACK)" --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" --output text); \
+	if [ -z "$$NEW_ID" ] || [ "$$NEW_ID" = "None" ]; then \
+		echo "Could not read InstanceId output from stack $(STACK) in $(AWS_REGION)"; \
+		exit 1; \
+	fi; \
+	NEW_ID="$$NEW_ID" python3 - <<'PY'\n\
+import os, pathlib, re\n\
+p = pathlib.Path(os.environ.get("ENVRC", ".envrc"))\n\
+new_id = os.environ["NEW_ID"]\n\
+s = p.read_text() if p.exists() else ""\n\
+\n\
+# Replace any existing INSTANCE_ID export; otherwise append.\n\
+pat = re.compile(r\"^(\\s*export\\s+INSTANCE_ID=).*$\", re.M)\n\
+out, n = pat.subn(r\"\\1'\" + new_id + r\"'\", s)\n\
+if n == 0:\n\
+    out = s.rstrip(\"\\n\") + f\"\\nexport INSTANCE_ID='{new_id}'\\n\"\n\
+p.write_text(out)\n\
+print(f\"Updated {p} INSTANCE_ID={new_id}\")\n\
+PY
 

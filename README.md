@@ -21,6 +21,20 @@ Install deps:
 npm ci
 ```
 
+## First deploy: Hytale authentication (2 browser auth steps)
+
+On a **fresh** instance, Hytale typically requires authentication before it can download/run the server. In practice there are **two separate times** you may be prompted with an auth URL/device code:
+
+- **Step 1**: the **downloader** (device auth to download `game.zip`)
+- **Step 2**: the **server** (server/provider auth while the server is starting)
+
+This repo supports **two ways** to handle those prompts:
+
+- **Discord (recommended, optional)**: auth URLs get posted to Discord via a webhook
+- **SSM (no Discord)**: you open an SSM session and read the URLs from logs
+
+Either way, once you complete auth, the instance will keep retrying automatically (a timer reruns the updater every ~5 minutes until the install succeeds).
+
 ## Backups (Hytale → S3, survive `cdk destroy`)
 
 Hytale supports automatic backups via `--backup` / `--backup-dir` / `--backup-frequency`. This repo uses that built-in backup output and periodically uploads it to an **S3 bucket** that lives in a separate stack.
@@ -53,8 +67,18 @@ npx cdk destroy HytaleServerStack
 Useful outputs from the stack:
 - **`InstanceId`**: used by the `Makefile`
 - **`PublicIp`**: current public IP when running (also see `make ip`)
-- **`DiscordWebhookSecretArn`**: where to store the Discord webhook URL
+- **`DiscordWebhookSecretArn`**: where to store the Discord webhook URL (**only if Discord is enabled**)
 - **`BackupsBucketName`**: S3 bucket where backups are stored
+
+## Discord integration (optional)
+
+Discord is **enabled by default** (recommended). Disable it completely with:
+
+```bash
+npx cdk deploy -c discordEnabled=false --parameters AllowedCidr=YOUR.IP.ADDRESS.HERE/32
+```
+
+If Discord is enabled but you **don’t** configure the webhook secret, all Discord messages are simply **skipped** (you can still use the SSM/logs workflow).
 
 ## Configure the Makefile
 
@@ -104,7 +128,31 @@ make status AWS_REGION=us-east-1 INSTANCE_ID=i-xxxxxxxxxxxxxxxxx
 
 ## Discord webhook secret (Secrets Manager)
 
-After the stack is deployed, store the Discord webhook URL in the secret created by the stack.
+If Discord is enabled, after the stack is deployed, store the Discord webhook URL in the secret created by the stack.
+
+### Option A (recommended): set webhook during deploy
+
+If you have `DISCORD_WEBHOOK_URL` in your environment (for example from `.envrc` + `direnv`), pass it as a deploy parameter:
+
+```bash
+npx cdk deploy HytaleServerStack \
+  --parameters AllowedCidr=YOUR.IP.ADDRESS.HERE/32 \
+  --parameters DiscordWebhookUrl="$DISCORD_WEBHOOK_URL"
+```
+
+Use `DiscordWebhookUrl=null` (default) to disable Discord posting.
+
+#### Deploying multiple stacks?
+
+CDK applies `--parameters` to **all stacks in that deploy command**. If you deploy multiple stacks (e.g. `--all`) you must scope the parameter to `HytaleServerStack`:
+
+```bash
+npx cdk deploy --all \
+  --parameters HytaleServerStack:AllowedCidr=YOUR.IP.ADDRESS.HERE/32 \
+  --parameters HytaleServerStack:DiscordWebhookUrl="$DISCORD_WEBHOOK_URL"
+```
+
+### Option B: set webhook after deploy
 
 ```bash
 REGION="us-east-1"
@@ -133,10 +181,42 @@ aws secretsmanager get-secret-value \
   --output text
 ```
 
+## Auth workflow: Discord path
+
+- **Before starting the instance**: configure the Discord webhook secret (section above).
+- **Start the instance**: `make up`
+- **When auth is required**:
+  - You’ll get a Discord message containing an auth URL (and usually a device code in the accompanying log excerpt).
+  - Complete the auth in your browser.
+  - Repeat if/when you get a second auth URL during server startup (**this is common on first deploy**).
+
+### Important: server/provider auth is automatic
+
+On first deploy, the server may require “server/provider” authentication (it logs messages like `No server tokens configured`). This repo automatically triggers the server console auth flow:
+
+- sets credential persistence: `/auth persistence Encrypted` (**case-sensitive**)
+- starts device login: `/auth login device`
+
+So in the Discord workflow, you should only need to **click the links** that get posted.
+
+If you want to watch progress, use:
+- `make update-logs` (downloader/update logs)
+- `make logs` (server logs)
+
+## Auth workflow: SSM (no Discord)
+
+- **Start the instance**: `make up`
+- **Open an SSM session**: `make ssm`
+- **Watch logs for auth URLs**:
+  - Updater/downloader: `sudo journalctl -u hytale-update -n 300 --no-pager`
+  - Server: `sudo journalctl -u hytale -n 300 --no-pager`
+- **When you see an auth URL + code**: open the URL in your browser and complete it.
+- **Do this twice** if you get prompted again later (downloader first, then server/provider auth).
+
 ## Superadmin / OP (grant yourself admin permissions)
 
 This server stores permissions in:
-- `/opt/hytale/server/Server/permissions.json`
+- `/opt/hytale/permissions.json`
 
 The `users` map is keyed by **account UUID** (not username). To grant yourself full admin, add your UUID to the `OP` group (which is `"*"` in `groups.OP`).
 
@@ -145,7 +225,7 @@ The `users` map is keyed by **account UUID** (not username). To grant yourself f
 Join the server once, then on the instance:
 
 ```bash
-sudo grep -RIn "Auto-selected profile:" /opt/hytale/server/Server/logs | tail -n 20
+sudo grep -RIn "Auto-selected profile:" /opt/hytale/logs | tail -n 20
 ```
 
 You should see something like:
@@ -156,11 +236,11 @@ You should see something like:
 Replace `PUT-UUID-HERE` and run:
 
 ```bash
-sudo cp /opt/hytale/server/Server/permissions.json "/opt/hytale/server/Server/permissions.json.bak.$(date +%s)"
+sudo cp /opt/hytale/permissions.json "/opt/hytale/permissions.json.bak.$(date +%s)"
 
 sudo python3 - <<'PY'
 import json, pathlib
-p = pathlib.Path("/opt/hytale/server/Server/permissions.json")
+p = pathlib.Path("/opt/hytale/permissions.json")
 data = json.loads(p.read_text())
 uid = "PUT-UUID-HERE"
 
@@ -172,7 +252,7 @@ user["groups"] = sorted(groups)
 p.write_text(json.dumps(data, indent=2) + "\n")
 PY
 
-sudo python3 -m json.tool /opt/hytale/server/Server/permissions.json >/dev/null && echo "permissions.json OK"
+sudo python3 -m json.tool /opt/hytale/permissions.json >/dev/null && echo "permissions.json OK"
 sudo systemctl restart hytale
 ```
 
