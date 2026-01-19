@@ -147,18 +147,5 @@ envrc-update:
 		echo "Could not read InstanceId output from stack $(STACK) in $(AWS_REGION)"; \
 		exit 1; \
 	fi; \
-	NEW_ID="$$NEW_ID" python3 - <<'PY'\n\
-import os, pathlib, re\n\
-p = pathlib.Path(os.environ.get("ENVRC", ".envrc"))\n\
-new_id = os.environ["NEW_ID"]\n\
-s = p.read_text() if p.exists() else ""\n\
-\n\
-# Replace any existing INSTANCE_ID export; otherwise append.\n\
-pat = re.compile(r\"^(\\s*export\\s+INSTANCE_ID=).*$\", re.M)\n\
-out, n = pat.subn(r\"\\1'\" + new_id + r\"'\", s)\n\
-if n == 0:\n\
-    out = s.rstrip(\"\\n\") + f\"\\nexport INSTANCE_ID='{new_id}'\\n\"\n\
-p.write_text(out)\n\
-print(f\"Updated {p} INSTANCE_ID={new_id}\")\n\
-PY
+		ENVRC="$(ENVRC)" NEW_ID="$$NEW_ID" python3 scripts/update-envrc.py
 

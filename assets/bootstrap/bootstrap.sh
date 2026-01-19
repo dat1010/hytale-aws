@@ -20,11 +20,70 @@ echo "==== $(date -u) Starting hytale bootstrap ===="
 dnf install -y --allowerasing curl-minimal unzip tar rsync awscli python3
 
 # Mount /dev/xvdb at /opt/hytale (persistent state volume)
-if ! file -s /dev/xvdb | grep -q ext4; then
-  mkfs -t ext4 /dev/xvdb
+DEVICE=/dev/xvdb
+MOUNTPOINT=/opt/hytale
+
+# SAFETY: Never auto-format a non-empty device.
+# - If the device already contains any filesystem/partition signature, refuse to format
+#   unless explicitly forced via FORCE_FORMAT/BOOTSTRAP_CONFIRM.
+# - Only format automatically when the device is confirmed empty.
+FORCE_FORMAT="${FORCE_FORMAT:-}"
+BOOTSTRAP_CONFIRM="${BOOTSTRAP_CONFIRM:-}"
+force=no
+case "${FORCE_FORMAT,,}" in 1|true|yes|y) force=yes ;; esac
+case "${BOOTSTRAP_CONFIRM,,}" in 1|true|yes|y) force=yes ;; esac
+
+if [ ! -b "$DEVICE" ]; then
+  echo "ERROR: Expected block device $DEVICE not found."
+  exit 1
 fi
-mkdir -p /opt/hytale
-grep -q '^/dev/xvdb /opt/hytale ' /etc/fstab || echo '/dev/xvdb /opt/hytale ext4 defaults,nofail 0 2' >> /etc/fstab
+
+file_out="$(file -s "$DEVICE" 2>/dev/null || true)"
+is_ext4=no
+if echo "$file_out" | grep -qi '\bext4\b'; then
+  is_ext4=yes
+fi
+
+has_signature=no
+if command -v blkid >/dev/null 2>&1; then
+  if blkid -p "$DEVICE" >/dev/null 2>&1; then
+    has_signature=yes
+  fi
+fi
+if command -v lsblk >/dev/null 2>&1; then
+  # If there are any partitions under the device, treat it as non-empty.
+  if lsblk -nr -o TYPE "$DEVICE" 2>/dev/null | grep -q '^part$'; then
+    has_signature=yes
+  fi
+  # If lsblk reports any filesystem type on the device or its children, treat it as non-empty.
+  if lsblk -nr -o FSTYPE "$DEVICE" 2>/dev/null | grep -q '[^[:space:]]'; then
+    has_signature=yes
+  fi
+fi
+if echo "$file_out" | grep -qiE 'filesystem|partition|LVM|xfs|btrfs|swap'; then
+  has_signature=yes
+fi
+
+if [ "$is_ext4" != "yes" ]; then
+  if [ "$has_signature" = "yes" ] && [ "$force" != "yes" ]; then
+    echo "ERROR: $DEVICE appears to contain existing data or a filesystem signature:"
+    echo "  $file_out"
+    echo
+    echo "Refusing to format automatically to avoid data loss."
+    echo "If you are sure this device can be wiped, re-run with FORCE_FORMAT=1 (or BOOTSTRAP_CONFIRM=1)."
+    exit 1
+  fi
+
+  if [ "$has_signature" = "yes" ] && [ "$force" = "yes" ]; then
+    echo "WARNING: FORCE_FORMAT/BOOTSTRAP_CONFIRM is set; formatting $DEVICE as ext4 (DATA LOSS)."
+    mkfs -t ext4 "$DEVICE"
+  elif [ "$has_signature" != "yes" ]; then
+    echo "$DEVICE appears empty; formatting as ext4."
+    mkfs -t ext4 "$DEVICE"
+  fi
+fi
+mkdir -p "$MOUNTPOINT"
+grep -q "^$DEVICE $MOUNTPOINT " /etc/fstab || echo "$DEVICE $MOUNTPOINT ext4 defaults,nofail 0 2" >> /etc/fstab
 mount -a
 
 # Java 25
@@ -189,6 +248,50 @@ if [ "$DOWNLOADER_RC" -ne 0 ]; then
   fi
   echo "Downloader failed (no auth URL detected). Exit code: $DOWNLOADER_RC"
   exit "$DOWNLOADER_RC"
+fi
+
+if [ "$DOWNLOADER_RC" -eq 0 ]; then
+  # Post-auth hardening: restrict any downloader cache/credential files.
+  # We enumerate likely paths as the hytale user, then enforce ownership/perms as root.
+  echo "Downloader succeeded; hardening credential/cache permissions (best-effort)."
+
+  CREDS_LIST=/opt/hytale/tmp/hytale-downloader-credential-files.txt
+  runuser -u hytale -- env HOME=/opt/hytale bash -lc '
+    set -euo pipefail
+    out="'"$CREDS_LIST"'"
+    : > "$out"
+    dirs=(
+      "/opt/hytale/.cache"
+      "$HOME/.cache"
+      "/opt/hytale/.config"
+      "$HOME/.config"
+    )
+    for d in "${dirs[@]}"; do
+      [ -d "$d" ] || continue
+      # Look for likely sensitive files produced by auth flows.
+      find "$d" -maxdepth 6 -type f \( \
+        -name "*token*" -o -name "*credential*" -o -name "*session*" -o -name "*oauth*" -o \
+        -name "*.json" -o -name "*.dat" \
+      \) -print >>"$out" 2>/dev/null || true
+    done
+  ' || echo "WARNING: credential file enumeration failed (continuing)."
+
+  # Tighten dir perms (directories need +x to traverse).
+  for d in /opt/hytale/.cache /opt/hytale/.config; do
+    if [ -d "$d" ]; then
+      chown -R hytale:hytale "$d" || true
+      chmod 700 "$d" || true
+    fi
+  done
+
+  if [ -s "$CREDS_LIST" ]; then
+    while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      chown hytale:hytale "$f" || true
+      chmod 600 "$f" || true
+    done < "$CREDS_LIST"
+  fi
+  rm -f "$CREDS_LIST" || true
 fi
 
 test -f /opt/hytale/game/game.zip
