@@ -167,7 +167,7 @@ function createInstance(
     vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
     securityGroup: sg,
     role,
-    instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3A, ec2.InstanceSize.LARGE), // 2 vCPU / 4 GiB
+    instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3A, ec2.InstanceSize.LARGE), // 2 vCPU / 8 GiB
     machineImage: ec2.MachineImage.latestAmazonLinux2023({
       cpuType: ec2.AmazonLinuxCpuType.X86_64,
     }),
