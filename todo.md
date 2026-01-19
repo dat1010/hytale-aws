@@ -55,45 +55,41 @@ Eliminate SSH for first-time Hytale authentication by **sending the auth URL/cod
 ### Goal
 After `cdk destroy HytaleServerStack` + redeploy, restoring your latest good server state should be **one command** and **low risk**.
 
-### Restore plan
+### Restore plan (now implemented for `universe/`)
 
-- **Confirm backup format + restore target paths**
-  - Determine what Hytale writes into `--backup-dir` (zip vs directory; what top-level paths exist).
-  - Confirm the live data paths we need to restore:
-    - `universe/` (world + player data) location for our setup (likely under `/opt/hytale/server/Server/`).
-    - server config files (`config.json`, `permissions.json`, `whitelist.json`, etc.) if they’re included in backups.
-    - mods/plugins if applicable.
+- **Backup format + target paths (confirmed)**
+  - Hytale backups in `--backup-dir` are **zip files** that contain `universe/`.
+  - In this repo’s setup the live save data ends up at **`/opt/hytale/universe/`**.
+  - Server config/permissions/whitelist/bans are at **`/opt/hytale/*.json`** (these are **not** part of Hytale’s built-in backup zips).
 
-- **Add an instance-side restore script**
-  - Create `/opt/hytale/bin/hytale-restore.sh` that:
-    - stops `hytale` (and pauses update timer if needed)
-    - downloads a selected backup from S3 to `/opt/hytale/tmp/`
-    - restores (extracts/copies) into the correct live directory
+- **Instance-side restore script (added)**
+  - `/opt/hytale/bin/hytale-restore.sh`:
+    - stops `hytale` + pauses backup sync timer
+    - downloads a selected backup zip from `s3://$bucket/hytale/backups/` (default: **latest**)
+    - moves `/opt/hytale/universe` to `universe.bak.<ts>` (if present)
+    - extracts the zip into `/opt/hytale` (recreating `/opt/hytale/universe`)
     - fixes ownership (`hytale:hytale`)
-    - starts `hytale`
-  - Support restore selectors:
-    - default: **latest** backup in `s3://$bucket/hytale/backups/`
-    - optional: restore by backup name / timestamp
-  - Safety:
-    - keep a local pre-restore copy (rename to `universe.bak.<ts>` or similar)
-    - refuse to restore while server is running (unless it can stop it)
+    - starts `hytale` + resumes backup sync timer
 
-- **Add Makefile helpers**
-  - `make restore-latest` (runs the restore script via SSM)
-  - optionally `make restore BACKUP=<name>` and `make list-backups`
+- **Makefile helpers (added)**
+  - `make list-backups`
+  - `make restore-latest`
+  - `make restore BACKUP=<zip-name>`
 
 - **Docs**
-  - Add “Restore from S3 backup after redeploy” section with:
+  - Add “Restore from S3 backups (after redeploy)” section:
     - prerequisites (instance running, server installed)
     - the restore command(s)
-    - how to pick a backup
-    - what gets restored (and what doesn’t)
+    - what gets restored (**universe**) vs what does not (**config/permissions/whitelist/mods**)
 
 ### Acceptance criteria (restore)
 - After destroying/redeploying `HytaleServerStack`, you can run `make restore-latest` and:
   - the server starts successfully
   - the world/player state matches the chosen backup
-  - permissions/admin setup is preserved (if included in backup), or documented if not
+  - permissions/admin setup is documented as **separate from built-in backups**
+
+### Next improvements (optional)
+- Decide whether we want a “full state backup” (copy `/opt/hytale/*.json` + `mods/` + maybe `auth.enc`) into S3 as well, so restores bring back config/admin without manual steps.
 
 ### Open questions to answer before coding
 - What exact text does `hytale-downloader` print for device auth (URL/code format)?

@@ -11,7 +11,7 @@ ENVRC ?= .envrc
 AWS_REGION := $(strip $(AWS_REGION))
 INSTANCE_ID := $(strip $(INSTANCE_ID))
 
-.PHONY: up down status ip ssm check logs update-logs units diag port service-restart envrc-update
+.PHONY: up down status ip ssm check logs update-logs units diag port service-restart envrc-update list-backups restore restore-latest
 
 ifndef INSTANCE_ID
   $(error INSTANCE_ID is not set. Set it in .envrc (direnv) or pass INSTANCE_ID=... to make)
@@ -132,6 +132,36 @@ diag:
 		--query 'Command.CommandId' --output text); \
 	echo "CommandId=$$CMD_ID"; \
 	sleep 3; \
+	aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardOutputContent' --output text; \
+	echo "---- STDERR ----"; \
+	aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardErrorContent' --output text
+
+list-backups:
+	@CMD_ID=$$(aws ssm send-command --region $(AWS_REGION) --instance-ids $(INSTANCE_ID) \
+		--document-name AWS-RunShellScript \
+		--comment "List Hytale backups in S3 (latest kept)" \
+		--parameters '{"commands":["set -euo pipefail; source /etc/hytale/hytale.env || true; echo Bucket=$${BACKUP_BUCKET_NAME:-}; echo Prefix=$${S3_BACKUP_PREFIX:-hytale/backups/}; if [ -z \"$${BACKUP_BUCKET_NAME:-}\" ]; then echo \"BACKUP_BUCKET_NAME is empty\"; exit 1; fi; TOKEN=$$(curl -sS -X PUT \"http://169.254.169.254/latest/api/token\" -H \"X-aws-ec2-metadata-token-ttl-seconds: 60\"); DOC=$$(curl -sS -H \"X-aws-ec2-metadata-token: $$TOKEN\" \"http://169.254.169.254/latest/dynamic/instance-identity/document\"); REGION=$$(echo \"$$DOC\" | python3 -c \"import json,sys; print(json.loads(sys.stdin.read())[\\\"region\\\"])\" ); aws --region \"$$REGION\" s3 ls \"s3://$$BACKUP_BUCKET_NAME/$${S3_BACKUP_PREFIX:-hytale/backups/}\" || true"]}' \
+		--query 'Command.CommandId' --output text); \
+	echo "CommandId=$$CMD_ID"; \
+	sleep 2; \
+	aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardOutputContent' --output text; \
+	echo "---- STDERR ----"; \
+	aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardErrorContent' --output text
+
+restore-latest:
+	@$(MAKE) restore BACKUP=latest
+
+# Usage:
+# - make restore-latest
+# - make restore BACKUP=2026-01-15_14-30-00.zip
+restore:
+	@CMD_ID=$$(aws ssm send-command --region $(AWS_REGION) --instance-ids $(INSTANCE_ID) \
+		--document-name AWS-RunShellScript \
+		--comment "Restore Hytale universe from S3 backup" \
+		--parameters '{"commands":["set -euxo pipefail; sudo /opt/hytale/bin/hytale-restore.sh \"$(BACKUP)\""]}' \
+		--query 'Command.CommandId' --output text); \
+	echo "CommandId=$$CMD_ID"; \
+	sleep 2; \
 	aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardOutputContent' --output text; \
 	echo "---- STDERR ----"; \
 	aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardErrorContent' --output text

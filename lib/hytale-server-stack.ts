@@ -84,7 +84,9 @@ export class HytaleServerStack extends cdk.Stack {
 
     // Allow instance to upload backups to S3.
     // `aws s3 sync` requires ListBucket + GetBucketLocation on the bucket, plus PutObject on objects.
+    // Restore support also requires GetObject on objects (S3 uses HeadObject under the hood).
     props.backupBucket.grantPut(instance.role);
+    props.backupBucket.grantRead(instance.role);
     instance.role.addToPrincipalPolicy(
       new iam.PolicyStatement({
         actions: ["s3:ListBucket", "s3:GetBucketLocation"],

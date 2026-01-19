@@ -70,6 +70,29 @@ Useful outputs from the stack:
 - **`DiscordWebhookSecretArn`**: where to store the Discord webhook URL (**only if Discord is enabled**)
 - **`BackupsBucketName`**: S3 bucket where backups are stored
 
+## Restore from S3 backups (after redeploy)
+
+This repo installs a helper on the instance: `/opt/hytale/bin/hytale-restore.sh`.
+
+- **What it restores**: the `universe/` save data (worlds/players) by downloading a selected **backup `.zip`** from S3 and extracting it into `/opt/hytale` (so it recreates `/opt/hytale/universe`).
+- **Safety**: it stops the `hytale` service first and renames any existing `/opt/hytale/universe` to `/opt/hytale/universe.bak.<timestamp>`.
+
+If you see `command not found` for `/opt/hytale/bin/hytale-restore.sh`, your instance was bootstrapped before this helper existed. In that case, either:
+- re-create the instance (destroy/redeploy the server stack), or
+- install the script manually on the instance (copy/paste from `assets/bootstrap/bootstrap.sh`).
+
+If you see `403 Forbidden` while downloading a backup from S3, the instance role is missing read access to the backups bucket. Redeploy the stack after updating IAM permissions, then retry restore.
+
+From your workstation:
+
+```bash
+make list-backups
+make restore-latest
+
+# Or pick a specific backup zip name:
+make restore BACKUP=2026-01-15_14-30-00.zip
+```
+
 ## Discord integration (optional)
 
 Discord is **enabled by default** (recommended). Disable it completely with:
@@ -123,8 +146,27 @@ make status AWS_REGION=us-east-1 INSTANCE_ID=i-xxxxxxxxxxxxxxxxx
 - **`make update-logs`**: tail the one-time updater logs (journalctl)
 - **`make port`**: check if something is listening on UDP 5520
 - **`make service-restart`**: restart the Hytale service
+- **`make list-backups`**: list backups stored in S3
+- **`make restore-latest`**: restore the latest backup `.zip` from S3 (replaces `universe/`)
+- **`make restore BACKUP=<zip>`**: restore a specific backup from S3
 - **`make units`**: show unit file + status for both hytale services
 - **`make diag`**: full bootstrap diagnostics (cloud-init + systemd + journald)
+
+## Common on-instance paths
+
+This repo keeps **persistent server state** under `/opt/hytale` (mounted on the secondary EBS volume).
+
+- **`/opt/hytale/logs/`**: file logs written by the bootstrap scripts and server wrapper
+- **`/opt/hytale/server/Server/HytaleServer.jar`**: server jar (installed by updater)
+- **`/opt/hytale/server/Assets.zip`**: assets zip (installed by updater)
+- **`/opt/hytale/backups/`**: built-in Hytale backups (synced to S3 by a timer)
+- **`/opt/hytale/config.json`**: server config
+- **`/opt/hytale/permissions.json`**: permissions / OP / groups
+- **`/opt/hytale/whitelist.json`**: whitelist
+- **`/opt/hytale/bans.json`**: bans
+- **`/opt/hytale/auth.enc`**: persisted auth tokens (created by the server auth flow)
+- **`/opt/hytale/bin/`**: helper scripts installed by bootstrap (update, run, backup sync, etc.)
+- **`/etc/systemd/system/hytale*.{service,timer}`**: systemd units created by bootstrap
 
 ## Discord webhook secret (Secrets Manager)
 
