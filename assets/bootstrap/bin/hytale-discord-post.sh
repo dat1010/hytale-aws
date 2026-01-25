@@ -44,16 +44,52 @@ fi
 
 PAYLOAD="$(python3 -c 'import json,sys; print(json.dumps({"content": sys.stdin.read()}))' <<<"$CONTENT")"
 
-# Post using curl (we've already proven curl works on the instance).
-CODE="$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
-  -H "Content-Type: application/json" \
-  -d "$PAYLOAD" \
-  "$WEBHOOK" || true)"
+# Post using curl with retries.
+# - Network errors are treated as failures (rc != 0 or empty http_code)
+# - Retry transient HTTP failures (429, 5xx)
+attempts="${DISCORD_POST_ATTEMPTS:-5}"
+delay="${DISCORD_POST_RETRY_DELAY_SEC:-1}"
+connect_timeout="${DISCORD_POST_CONNECT_TIMEOUT_SEC:-5}"
+max_time="${DISCORD_POST_MAX_TIME_SEC:-15}"
 
-if [ "$CODE" != "204" ] && [ "$CODE" != "200" ]; then
-  echo "Discord POST failed (http=$CODE)"
-  exit 1
-fi
+CODE=""
+rc=0
+for ((i=1; i<=attempts; i++)); do
+  tmp_err="$(mktemp)"
+  set +e
+  CODE="$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
+    --connect-timeout "$connect_timeout" \
+    --max-time "$max_time" \
+    -H "Content-Type: application/json" \
+    -d "$PAYLOAD" \
+    "$WEBHOOK" 2>"$tmp_err")"
+  rc=$?
+  set -e
+  curl_err="$(cat "$tmp_err" 2>/dev/null || true)"
+  rm -f "$tmp_err"
 
-echo "Posted message to Discord (http=$CODE)"
+  if [ "$rc" -ne 0 ] || [ -z "${CODE:-}" ]; then
+    echo "Discord POST network error (attempt=$i/$attempts curl_exit=$rc)"
+    if [ -n "${curl_err//[$' \t\r\n']/}" ]; then
+      echo "$curl_err"
+    fi
+  elif [ "$CODE" = "204" ] || [ "$CODE" = "200" ]; then
+    echo "Posted message to Discord (http=$CODE)"
+    exit 0
+  else
+    echo "Discord POST failed (attempt=$i/$attempts http=$CODE)"
+    # Retry only on rate limiting and transient server errors.
+    if [ "$CODE" != "429" ] && [[ "$CODE" != 5* ]]; then
+      exit 1
+    fi
+  fi
+
+  if [ "$i" -lt "$attempts" ]; then
+    sleep "$delay"
+    delay="$((delay * 2))"
+  fi
+done
+
+echo "Discord POST failed after retries (last_http=${CODE:-} last_curl_exit=${rc:-})"
+exit 1
 

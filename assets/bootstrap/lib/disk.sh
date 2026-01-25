@@ -86,7 +86,8 @@ ensure_ext4_mounted() {
   local file_out
   file_out="$(file -s "$device" 2>/dev/null || true)"
   local is_ext4=no
-  if echo "$file_out" | grep -qi '\bext4\b'; then
+  # POSIX portability: grep '\b' is GNU-only. Match ext4 as a standalone token.
+  if printf '%s\n' "$file_out" | grep -qiE '(^|[^[:alnum:]_])ext4([^[:alnum:]_]|$)'; then
     is_ext4=yes
   fi
 
@@ -122,10 +123,10 @@ ensure_ext4_mounted() {
 
     if [ "$has_signature" = "yes" ] && [ "$force" = "yes" ]; then
       echo "WARNING: FORCE_FORMAT/BOOTSTRAP_CONFIRM is set; formatting $device as ext4 (DATA LOSS)."
-      mkfs -t ext4 "$device"
+      mkfs -t ext4 -F "$device"
     elif [ "$has_signature" != "yes" ]; then
       echo "$device appears empty; formatting as ext4."
-      mkfs -t ext4 "$device"
+      mkfs -t ext4 -F "$device"
     fi
   fi
 

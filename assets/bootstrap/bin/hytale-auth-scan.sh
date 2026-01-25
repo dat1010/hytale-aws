@@ -88,7 +88,7 @@ while IFS= read -r url; do
     continue
   fi
 
-  {
+  if {
     echo "Hytale authentication link detected (you may need to do this twice on first deploy)."
     echo
     echo "$url"
@@ -97,8 +97,10 @@ while IFS= read -r url; do
     echo
     echo "Recent auth-related server output (for codes/instructions):"
     journalctl -u hytale -n 120 --no-pager 2>/dev/null | grep -Ei 'https?://|code|device|verify|authorize|auth|session' | tail -n 30 || true
-  } | /opt/hytale/bin/hytale-discord-post.sh || true
-
-  echo "$url" >> "$SENT"
+  } | /opt/hytale/bin/hytale-discord-post.sh; then
+    echo "$url" >> "$SENT"
+  else
+    echo "WARNING: failed to post auth URL to Discord; will retry later: $url" >&2
+  fi
 done <<< "$urls"
 

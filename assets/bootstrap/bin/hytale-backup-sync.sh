@@ -58,6 +58,7 @@ python3 - <<'PY'
 import json
 import os
 import subprocess
+import sys
 from collections import defaultdict
 
 bucket = os.environ.get("DEST_BUCKET")
@@ -68,7 +69,7 @@ region = os.environ.get("BUCKET_REGION")
 if not bucket or keep <= 0:
     raise SystemExit(0)
 
-cmd = [
+base_cmd = [
     "aws",
     "--region",
     region,
@@ -81,9 +82,37 @@ cmd = [
     "--output",
     "json",
 ]
-raw = subprocess.check_output(cmd)
-data = json.loads(raw)
-objs = data.get("Contents", []) or []
+objs = []
+token = None
+while True:
+    cmd = base_cmd + (["--continuation-token", token] if token else [])
+    try:
+        raw = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as e:
+        out = (e.output or b"").decode("utf-8", "replace")
+        print(f"ERROR: aws s3api list-objects-v2 failed (rc={e.returncode})", file=sys.stderr)
+        if out.strip():
+            print(out.rstrip(), file=sys.stderr)
+        raise SystemExit(1)
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        out = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        print("ERROR: could not parse aws s3api list-objects-v2 output as JSON", file=sys.stderr)
+        if out.strip():
+            print(out.rstrip(), file=sys.stderr)
+        raise SystemExit(1)
+
+    objs.extend(data.get("Contents", []) or [])
+    if not data.get("IsTruncated"):
+        break
+
+    token = data.get("NextContinuationToken")
+    if not token:
+        print("ERROR: S3 listing is truncated but no NextContinuationToken was returned.", file=sys.stderr)
+        raise SystemExit(1)
+
 if not objs:
     raise SystemExit(0)
 

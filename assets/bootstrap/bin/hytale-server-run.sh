@@ -4,7 +4,8 @@ set -euo pipefail
 WORKDIR=/opt/hytale
 LOG=/opt/hytale/logs/hytale-server.log
 FIFO=/opt/hytale/tmp/hytale-console.fifo
-FLAG=/opt/hytale/tmp/hytale-server-auth.started
+COOLDOWN_FILE=/opt/hytale/tmp/hytale-server-auth.last
+COOLDOWN_SEC="${HYTALE_SERVER_AUTH_COOLDOWN_SEC:-300}"
 
 source /etc/hytale/hytale.env || true
 
@@ -21,22 +22,40 @@ fi
 exec 3<>"$FIFO"
 
 maybe_kick_server_auth() {
-  # Only do this once per instance boot.
-  if [ -f "$FLAG" ]; then
+  # Trigger server/provider auth until tokens are persisted.
+  # We gate by a cooldown so we don't spam the console if the server loops.
+  should_trigger() {
+    # If auth tokens exist, do nothing.
+    if [ -f /opt/hytale/auth.enc ]; then
+      return 1
+    fi
+
+    local now last diff
+    now="$(date +%s)"
+    last=0
+    if [ -f "$COOLDOWN_FILE" ]; then
+      last="$(cat "$COOLDOWN_FILE" 2>/dev/null || echo 0)"
+    fi
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    diff=$((now - last))
+    if [ "$diff" -lt "$COOLDOWN_SEC" ]; then
+      return 1
+    fi
+    echo "$now" >"$COOLDOWN_FILE" 2>/dev/null || true
     return 0
-  fi
+  }
 
   # Watch the server log for the "no tokens configured" message, then inject commands.
   # We deliberately do NOT rely on journald for server output.
   ( tail -n 0 -F "$LOG" 2>/dev/null || true ) | while IFS= read -r line; do
     case "$line" in
       *"No server tokens configured."*)
-        echo "Detected missing server tokens; starting server auth flow" >>"$LOG"
-        # Persist tokens to disk, then start device login (case-sensitive: Encrypted).
-        printf "/auth persistence Encrypted\n" >&3 || true
-        printf "/auth login device\n" >&3 || true
-        date -u +"%Y-%m-%dT%H:%M:%SZ" >"$FLAG" || true
-        break
+        if should_trigger; then
+          echo "Detected missing server tokens; starting server auth flow" >>"$LOG"
+          # Persist tokens to disk, then start device login (case-sensitive: Encrypted).
+          printf "/auth persistence Encrypted\n" >&3 || true
+          printf "/auth login device\n" >&3 || true
+        fi
         ;;
     esac
   done &

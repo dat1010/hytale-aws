@@ -262,10 +262,25 @@ If you want to watch progress, use:
 - **Start the instance**: `make up`
 - **Open an SSM session**: `make ssm`
 - **Watch logs for auth URLs**:
-  - Updater/downloader: `sudo journalctl -u hytale-update -n 300 --no-pager`
-  - Server: `sudo journalctl -u hytale -n 300 --no-pager`
+  - Updater/downloader: `/opt/hytale/logs/hytale-downloader.log`
+  - Server: `/opt/hytale/logs/hytale-server.log`
 - **When you see an auth URL + code**: open the URL in your browser and complete it.
 - **Do this twice** if you get prompted again later (downloader first, then server/provider auth).
+
+### Non-interactive fallback (recommended)
+
+If Discord is down (or you don’t want an interactive session), you can pull the latest auth URL via SSM:
+
+```bash
+make auth-url
+```
+
+Helpful when iterating on auth logic:
+
+```bash
+make auth-reset     # reset the server auth trigger/cooldown and restart hytale
+make auth-scan-now  # run the auth URL scanner + show recent discord post logs
+```
 
 ## Superadmin / OP (grant yourself admin permissions)
 
