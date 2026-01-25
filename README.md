@@ -79,7 +79,19 @@ This repo installs a helper on the instance: `/opt/hytale/bin/hytale-restore.sh`
 
 If you see `command not found` for `/opt/hytale/bin/hytale-restore.sh`, your instance was bootstrapped before this helper existed. In that case, either:
 - re-create the instance (destroy/redeploy the server stack), or
-- install the script manually on the instance (copy/paste from `assets/bootstrap/bootstrap.sh`).
+- install the script manually on the instance (copy from `assets/bootstrap/bin/hytale-restore.sh`).
+
+### Data volume device naming (Nitro / NVMe)
+
+On Nitro-based instances, the “data” EBS volume can show up as an NVMe device (for example `/dev/nvme1n1`) even though it’s mapped as `/dev/xvdb`.
+
+Bootstrap will try, in order:
+
+- `HYTALE_DATA_DEVICE` if set (explicit override)
+- `/dev/xvdb` if present
+- otherwise: auto-discover a non-root disk matching `DATA_VOLUME_SIZE_GIB` (default: 30GiB)
+
+If you ever hit `Expected block device /dev/xvdb not found`-style errors during bootstrap, set `HYTALE_DATA_DEVICE` to the correct `/dev/...` and rerun bootstrap (or redeploy the server stack).
 
 If you see `403 Forbidden` while downloading a backup from S3, the instance role is missing read access to the backups bucket. Redeploy the stack after updating IAM permissions, then retry restore.
 
@@ -250,10 +262,25 @@ If you want to watch progress, use:
 - **Start the instance**: `make up`
 - **Open an SSM session**: `make ssm`
 - **Watch logs for auth URLs**:
-  - Updater/downloader: `sudo journalctl -u hytale-update -n 300 --no-pager`
-  - Server: `sudo journalctl -u hytale -n 300 --no-pager`
+  - Updater/downloader: `/opt/hytale/logs/hytale-downloader.log`
+  - Server: `/opt/hytale/logs/hytale-server.log`
 - **When you see an auth URL + code**: open the URL in your browser and complete it.
 - **Do this twice** if you get prompted again later (downloader first, then server/provider auth).
+
+### Non-interactive fallback (recommended)
+
+If Discord is down (or you don’t want an interactive session), you can pull the latest auth URL via SSM:
+
+```bash
+make auth-url
+```
+
+Helpful when iterating on auth logic:
+
+```bash
+make auth-reset     # reset the server auth trigger/cooldown and restart hytale
+make auth-scan-now  # run the auth URL scanner + show recent discord post logs
+```
 
 ## Superadmin / OP (grant yourself admin permissions)
 

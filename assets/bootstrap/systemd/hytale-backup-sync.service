@@ -1,0 +1,9 @@
+[Unit]
+Description=Sync Hytale backups to S3
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/hytale/bin/hytale-backup-sync.sh
+

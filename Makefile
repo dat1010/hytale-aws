@@ -13,7 +13,7 @@ ENVRC ?= .envrc
 AWS_REGION := $(strip $(AWS_REGION))
 INSTANCE_ID := $(strip $(INSTANCE_ID))
 
-.PHONY: up down status ip ssm check logs update-logs units diag port service-restart envrc-update list-backups restore restore-latest backup-create backup-sync backup-now
+.PHONY: up down status ip ssm check logs update-logs units diag port service-restart envrc-update list-backups restore restore-latest backup-create backup-sync backup-now auth-url auth-reset auth-scan-now
 
 ifndef INSTANCE_ID
   $(error INSTANCE_ID is not set. Set it in .envrc (direnv) or pass INSTANCE_ID=... to make)
@@ -181,6 +181,45 @@ backup-sync:
 backup-now:
 	@$(MAKE) backup-create
 	@$(MAKE) backup-sync
+
+# Print latest auth URL/device info without an interactive SSM session.
+auth-url:
+	@CMD_ID=$$(AWS_PAGER="$(AWS_PAGER)" aws ssm send-command --region $(AWS_REGION) --instance-ids $(INSTANCE_ID) \
+		--document-name AWS-RunShellScript \
+		--comment "Print latest Hytale auth URL (downloader/server)" \
+		--parameters '{"commands":["set -euo pipefail; echo \"== Downloader auth (step 1) ==\"; f=/opt/hytale/logs/hytale-downloader.log; if [ -f \"$$f\" ]; then url=$$(grep -Eo \"https?://[^[:space:]]+\" \"$$f\" | tr -d \"\\r\" | grep \"oauth.accounts.hytale.com/oauth2/device/verify\" | grep \"user_code=\" | tail -n 1 || true); if [ -n \"$$url\" ]; then echo \"URL: $$url\"; else echo \"No oauth device URL found in $$f\"; fi; echo \"-- context --\"; grep -Ei \"oauth|device|verify|user_code|code|auth\" \"$$f\" | tail -n 80 || true; else echo \"Missing $$f\"; fi; echo; echo \"== Server/provider auth (step 2) ==\"; f=/opt/hytale/logs/hytale-server.log; if [ -f \"$$f\" ]; then url=$$(grep -Eo \"https?://[^[:space:]]+\" \"$$f\" | tr -d \"\\r\" | grep \"oauth.accounts.hytale.com/oauth2/device/verify\" | grep \"user_code=\" | tail -n 1 || true); if [ -n \"$$url\" ]; then echo \"URL: $$url\"; else echo \"No oauth device URL found in $$f\"; fi; echo \"-- context --\"; grep -Ei \"No server tokens configured|oauth|device|verify|user_code|code|/auth\" \"$$f\" | tail -n 120 || true; else echo \"Missing $$f\"; fi; echo; echo \"== Token file ==\"; ls -la /opt/hytale/auth.enc 2>/dev/null || echo \"No /opt/hytale/auth.enc yet\";"]}' \
+		--query 'Command.CommandId' --output text); \
+	echo "CommandId=$$CMD_ID"; \
+	sleep 2; \
+	AWS_PAGER="$(AWS_PAGER)" aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardOutputContent' --output text; \
+	echo "---- STDERR ----"; \
+	AWS_PAGER="$(AWS_PAGER)" aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardErrorContent' --output text
+
+# Reset server auth cooldown/flags and restart the server (useful while iterating).
+auth-reset:
+	@CMD_ID=$$(AWS_PAGER="$(AWS_PAGER)" aws ssm send-command --region $(AWS_REGION) --instance-ids $(INSTANCE_ID) \
+		--document-name AWS-RunShellScript \
+		--comment "Reset server auth trigger and restart hytale" \
+		--parameters '{"commands":["set -euxo pipefail; sudo rm -f /opt/hytale/tmp/hytale-server-auth.started /opt/hytale/tmp/hytale-server-auth.last; sudo systemctl restart hytale; sudo tail -n 120 /opt/hytale/logs/hytale-server.log || true;"]}' \
+		--query 'Command.CommandId' --output text); \
+	echo "CommandId=$$CMD_ID"; \
+	sleep 2; \
+	AWS_PAGER="$(AWS_PAGER)" aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardOutputContent' --output text; \
+	echo "---- STDERR ----"; \
+	AWS_PAGER="$(AWS_PAGER)" aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardErrorContent' --output text
+
+# Run the auth scan script immediately (tries to post to Discord; prints recent scan inputs).
+auth-scan-now:
+	@CMD_ID=$$(AWS_PAGER="$(AWS_PAGER)" aws ssm send-command --region $(AWS_REGION) --instance-ids $(INSTANCE_ID) \
+		--document-name AWS-RunShellScript \
+		--comment "Run hytale-auth-scan now" \
+		--parameters '{"commands":["set -euxo pipefail; sudo /opt/hytale/bin/hytale-auth-scan.sh || true; echo \"== recent discord post log ==\"; sudo tail -n 120 /opt/hytale/logs/hytale-discord-post.log || true; echo \"== recent server log urls ==\"; sudo grep -Eo \"https?://[^[:space:]]+\" /opt/hytale/logs/hytale-server.log 2>/dev/null | tail -n 20 || true;"]}' \
+		--query 'Command.CommandId' --output text); \
+	echo "CommandId=$$CMD_ID"; \
+	sleep 2; \
+	AWS_PAGER="$(AWS_PAGER)" aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardOutputContent' --output text; \
+	echo "---- STDERR ----"; \
+	AWS_PAGER="$(AWS_PAGER)" aws ssm get-command-invocation --region $(AWS_REGION) --command-id $$CMD_ID --instance-id $(INSTANCE_ID) --query 'StandardErrorContent' --output text
 
 restore-latest:
 	@$(MAKE) restore BACKUP=latest
