@@ -1,0 +1,16 @@
+[Unit]
+Description=Hytale Update (Downloader + Extract)
+After=network-online.target
+Wants=network-online.target
+
+# Only run update if server is NOT installed yet
+ConditionPathExists=!/opt/hytale/server/Server/HytaleServer.jar
+
+[Service]
+Type=oneshot
+TimeoutStartSec=0
+ExecStart=/opt/hytale/bin/hytale-update.sh
+
+[Install]
+WantedBy=multi-user.target
+

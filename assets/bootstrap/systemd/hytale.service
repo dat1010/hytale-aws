@@ -1,0 +1,30 @@
+[Unit]
+Description=Hytale Dedicated Server
+After=network-online.target hytale-update.service
+Wants=network-online.target hytale-update.service
+
+[Service]
+Type=simple
+User=hytale
+# IMPORTANT:
+# On first boot, the updater may not have created /opt/hytale/server/Server yet.
+# systemd applies WorkingDirectory *before* ExecStartPre, so setting it to a not-yet-existing
+# directory causes `status=200/CHDIR` and prevents the server from ever reaching auth prompts.
+WorkingDirectory=/opt/hytale
+
+# Also write stdout to a file so we can scan for auth URLs.
+StandardOutput=append:/opt/hytale/logs/hytale-server.log
+StandardError=append:/opt/hytale/logs/hytale-server.log
+
+# Wait until server files exist (prevents bad boots)
+ExecStartPre=/usr/bin/test -f /opt/hytale/server/Server/HytaleServer.jar
+ExecStartPre=/usr/bin/test -f /opt/hytale/server/Assets.zip
+
+ExecStart=/opt/hytale/bin/hytale-server-run.sh
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+

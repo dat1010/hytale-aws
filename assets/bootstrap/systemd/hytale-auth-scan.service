@@ -1,0 +1,9 @@
+[Unit]
+Description=Scan Hytale logs for auth URLs and notify Discord
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/hytale/bin/hytale-auth-scan.sh
+
